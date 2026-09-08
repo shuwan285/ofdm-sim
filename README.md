@@ -28,6 +28,8 @@
 | `m5_channel_estimation.py` | 导频信道估计（LS + 插值） |
 | `m5_papr.py` | PAPR（峰值平均功率比）分析 |
 | `OFDM_notes.md` | OFDM 理论学习笔记 |
+| `GLOSSARY.md` | 知识点清单与词汇表 |
+| `PROJECT_LOG.md` | 项目开发日志 |
 
 ## 🚀 快速开始
 
