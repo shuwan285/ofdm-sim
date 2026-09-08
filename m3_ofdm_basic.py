@@ -1,0 +1,64 @@
+# -*- coding: utf-8 -*-
+"""
+M3 OFDM 核心 —— 最简 OFDM 链路（无噪声，收发一致性验证）
+
+这就是你理论里那张框图的代码实现：
+发射：比特 → QPSK调制 → IFFT(打包) → 加循环前缀 → 发送
+接收：接收 → 去循环前缀 → FFT(拆包) → QPSK解调 → 比特
+
+参数：N=64 个子载波，循环前缀长度 cp=16。
+"""
+import numpy as np
+
+# ---------- QPSK 调制/解调（复用 M2 的） ----------
+def qpsk_mod(bits):
+    symbols = np.zeros(len(bits) // 2, dtype=complex)
+    for i in range(0, len(bits), 2):
+        b0, b1 = bits[i], bits[i + 1]
+        if b0 == 0 and b1 == 0:      symbols[i // 2] = 1 + 1j
+        elif b0 == 0 and b1 == 1:    symbols[i // 2] = -1 + 1j
+        elif b0 == 1 and b1 == 1:    symbols[i // 2] = -1 - 1j
+        else:                        symbols[i // 2] = 1 - 1j
+    return symbols / np.sqrt(2)
+
+def qpsk_demod(symbols):
+    bits = np.zeros(2 * len(symbols), dtype=int)
+    for i, s in enumerate(symbols):
+        bits[2 * i]     = 0 if s.imag > 0 else 1
+        bits[2 * i + 1] = 0 if s.real > 0 else 1
+    return bits
+
+# ---------- OFDM 参数 ----------
+N = 64          # 子载波数（= FFT 点数）
+cp = 16         # 循环前缀长度
+
+# ============ 发射端 ============
+# 1. 生成数据：N 个子载波，每个 2 比特 = 128 比特
+num_bits = 2 * N
+bits = np.random.randint(0, 2, num_bits)
+
+# 2. QPSK 调制：128 比特 → 64 个复数符号（这就是"频域"数据，每个对应一个子载波）
+freq_sym = qpsk_mod(bits)
+print("频域符号数：", len(freq_sym), "（每个子载波一个）")
+
+# 3. IFFT：频域 → 时域（把 64 个子载波"打包"成一个时域波形）
+time_sym = np.fft.ifft(freq_sym)
+print("IFFT 后时域点数：", len(time_sym))
+
+# 4. 加循环前缀：把末尾 cp=16 个复制到前面
+tx = np.concatenate([time_sym[-cp:], time_sym])
+print("加 CP 后总长度：", len(tx), "= 16 + 64")
+
+# ============ 接收端 ============
+# 5. 去循环前缀：丢掉前面 cp 个（M3 无噪声，直接收到 tx）
+rx = tx[cp:]
+print("去 CP 后长度：", len(rx))
+
+# 6. FFT：时域 → 频域（拆包，还原出 64 个子载波的数据）
+rx_freq = np.fft.fft(rx)
+
+# 7. QPSK 解调，并和原始比特对比
+rx_bits = qpsk_demod(rx_freq)
+print("\n原始比特：", bits[:16], "...")
+print("恢复比特：", rx_bits[:16], "...")
+print("完全一致？", np.array_equal(bits, rx_bits))
