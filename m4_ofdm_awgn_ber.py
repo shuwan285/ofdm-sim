@@ -1,95 +1,54 @@
 # -*- coding: utf-8 -*-
-"""OFDM + AWGN 的误码率，并与直传 QPSK 对比（两者应相同）。运行：python m4_ofdm_awgn_ber.py"""
+"""OFDM + AWGN 的误码率，并与直传 QPSK 对比（两者应重合）。
+
+注意：这里的 Eb/N0 按「有效子载波能量」归一化，CP 的发射能量开销未计入，
+详见 README 的「建模假设」。运行：python m4_ofdm_awgn_ber.py
+"""
 import numpy as np
-import matplotlib
 import matplotlib.pyplot as plt
 
-# 中文字体
-matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei']
-matplotlib.rcParams['axes.unicode_minus'] = False
+from ofdm_sim import (qpsk_mod, qpsk_demod, qpsk_ber_theory,
+                      ofdm_tx, ofdm_rx, awgn_ofdm)
+from ofdm_sim.channel import awgn
+from ofdm_sim.cli import add_bits_arg, add_ebn0_arg, base_parser, eb_n0_range, finish
+from ofdm_sim.plotting import setup_chinese_font
 
-def qpsk_mod(bits):
-    symbols = np.zeros(len(bits) // 2, dtype=complex)
-    for i in range(0, len(bits), 2):
-        b0, b1 = bits[i], bits[i + 1]
-        if b0 == 0 and b1 == 0:
-            symbols[i // 2] = 1 + 1j
-        elif b0 == 0 and b1 == 1:
-            symbols[i // 2] = -1 + 1j
-        elif b0 == 1 and b1 == 1:
-            symbols[i // 2] = -1 - 1j
-        else:
-            symbols[i // 2] = 1 - 1j
-    return symbols / np.sqrt(2)
-
-def qpsk_demod(symbols):
-    bits = np.zeros(2 * len(symbols), dtype=int)
-    for i, s in enumerate(symbols):
-        bits[2 * i]     = 0 if s.imag > 0 else 1
-        bits[2 * i + 1] = 0 if s.real > 0 else 1
-    return bits
+setup_chinese_font()
 
 N = 64    # 子载波数
-cp = 16   # 循环前缀长度
 
-def ofdm_tx(bits):
-    freq_sym = qpsk_mod(bits)
-    n_syms = len(freq_sym) // N
-    freq_sym = freq_sym[:n_syms * N]
-    freq_grid = freq_sym.reshape(n_syms, N)
-    time_grid = np.fft.ifft(freq_grid, axis=1)
-    with_cp = np.concatenate([time_grid[:, -cp:], time_grid], axis=1)
-    return with_cp.flatten(), n_syms
+parser = add_bits_arg(add_ebn0_arg(base_parser(__doc__)))
+parser.add_argument("--cp", type=int, default=16, help="循环前缀长度（默认 16）")
+args = parser.parse_args()
+cp = args.cp
+rng = np.random.default_rng(args.seed)
 
-def ofdm_rx(signal, n_syms):
-    with_cp = signal.reshape(n_syms, N + cp)
-    time_grid = with_cp[:, cp:]
-    freq_grid = np.fft.fft(time_grid, axis=1)
-    return qpsk_demod(freq_grid.flatten())
+ebn0_db = eb_n0_range(args.ebn0)
+bits = rng.integers(0, 2, args.bits)
 
-def qpsk_direct_ber(bits, EbN0_db):
-    symbols = qpsk_mod(bits)
-    ber = []
-    for eb in EbN0_db:
-        eb_lin = 10 ** (eb / 10)
-        n0 = (1 / 2) / eb_lin
-        noise = np.sqrt(n0 / 2) * (np.random.randn(len(symbols))
-                                   + 1j * np.random.randn(len(symbols)))
-        rx = qpsk_demod(symbols + noise)
-        ber.append(np.sum(rx != bits) / len(bits))
-    return ber
+# 直传 QPSK（无 OFDM，无 CP）
+symbols = qpsk_mod(bits)
+ber_qpsk = [np.mean(qpsk_demod(awgn(symbols, eb, rng)) != bits) for eb in ebn0_db]
 
-def ofdm_ber(bits, EbN0_db):
-    tx, n_syms = ofdm_tx(bits)
-    n_rx = n_syms * N * 2
-    ber = []
-    for eb in EbN0_db:
-        eb_lin = 10 ** (eb / 10)
-        sigma2 = 1 / (4 * N * eb_lin)          # 多出的 1/N 来自 IFFT 把能量摊到 N 个时域点
-        noise = np.sqrt(sigma2) * (np.random.randn(len(tx))
-                                   + 1j * np.random.randn(len(tx)))
-        rx = ofdm_rx(tx + noise, n_syms)
-        ber.append(np.sum(rx != bits[:n_rx]) / n_rx)
-    return ber
+# OFDM + AWGN
+tx, n_syms = ofdm_tx(bits, N, cp)
+n_rx = n_syms * N * 2
+ber_ofdm = [np.mean(ofdm_rx(awgn_ofdm(tx, N, eb, rng), n_syms, N, cp) != bits[:n_rx])
+            for eb in ebn0_db]
 
-num_bits = 100000
-bits = np.random.randint(0, 2, num_bits)
-EbN0_db = np.arange(0, 11, 1)
-
-ber_qpsk = qpsk_direct_ber(bits, EbN0_db)
-ber_ofdm = ofdm_ber(bits, EbN0_db)
-
+print(f"OFDM 参数：N={N}，CP={cp}（有效吞吐率 {N / (N + cp):.1%}）")
 print("Eb/N0 | QPSK 直接 | OFDM")
 print("-" * 35)
-for i, eb in enumerate(EbN0_db):
+for i, eb in enumerate(ebn0_db):
     print(f"{eb:4d}  | {ber_qpsk[i]:.2e} | {ber_ofdm[i]:.2e}")
 
-plt.figure(figsize=(8, 5))
-plt.semilogy(EbN0_db, ber_qpsk, 'o-', label="QPSK 直接传输")
-plt.semilogy(EbN0_db, ber_ofdm, 's--', label="OFDM（QPSK 子载波）")
+fig = plt.figure(figsize=(8, 5))
+plt.semilogy(ebn0_db, ber_qpsk, 'o-', label="QPSK 直接传输")
+plt.semilogy(ebn0_db, ber_ofdm, 's--', label="OFDM（QPSK 子载波）")
+plt.semilogy(ebn0_db, qpsk_ber_theory(ebn0_db), 'k:', linewidth=1, label="QPSK 理论值")
 plt.xlabel("Eb/N0 (dB)")
 plt.ylabel("误码率 BER")
-plt.title("OFDM 在 AWGN 下与 QPSK 误码率相同")
+plt.title("AWGN 下 OFDM 与直传 QPSK 误码率相同")
 plt.grid(True, which='both')
 plt.legend()
-plt.show()
+finish(fig, args)

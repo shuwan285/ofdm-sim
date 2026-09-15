@@ -1,55 +1,36 @@
 # -*- coding: utf-8 -*-
-"""QPSK 误码率（BER）曲线：加噪声 -> 解调 -> 统计误码。运行：python m2_qpsk_ber.py"""
+"""QPSK 误码率（BER）曲线，并与理论值对比。运行：python m2_qpsk_ber.py"""
 import numpy as np
-import matplotlib
 import matplotlib.pyplot as plt
 
-# 中文字体
-matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei']
-matplotlib.rcParams['axes.unicode_minus'] = False
+from ofdm_sim import qpsk_mod, qpsk_demod, qpsk_ber_theory
+from ofdm_sim.channel import awgn
+from ofdm_sim.cli import add_bits_arg, add_ebn0_arg, base_parser, eb_n0_range, finish
+from ofdm_sim.plotting import setup_chinese_font
 
-def qpsk_mod(bits):
-    symbols = np.zeros(len(bits) // 2, dtype=complex)
-    for i in range(0, len(bits), 2):
-        b0, b1 = bits[i], bits[i + 1]
-        if b0 == 0 and b1 == 0:
-            symbols[i // 2] = 1 + 1j
-        elif b0 == 0 and b1 == 1:
-            symbols[i // 2] = -1 + 1j
-        elif b0 == 1 and b1 == 1:
-            symbols[i // 2] = -1 - 1j
-        else:
-            symbols[i // 2] = 1 - 1j
-    return symbols
+setup_chinese_font()
 
-def qpsk_demod(symbols):
-    bits = np.zeros(2 * len(symbols), dtype=int)
-    for i, s in enumerate(symbols):
-        bits[2 * i]     = 0 if s.imag > 0 else 1
-        bits[2 * i + 1] = 0 if s.real > 0 else 1
-    return bits
+parser = add_bits_arg(add_ebn0_arg(base_parser(__doc__)))
+args = parser.parse_args()
+rng = np.random.default_rng(args.seed)
 
-num_bits = 100000
-bits = np.random.randint(0, 2, num_bits)
+ebn0_db = eb_n0_range(args.ebn0)
+bits = rng.integers(0, 2, args.bits)
 symbols = qpsk_mod(bits)
 
-EbN0_db = np.arange(0, 11, 1)
 ber = []
-for eb in EbN0_db:
-    eb_linear = 10 ** (eb / 10)
-    n0 = 1 / eb_linear                    # 符号在 ±1±1j，每比特能量 Eb = 1
-    noise = np.sqrt(n0 / 2) * (np.random.randn(len(symbols))
-                               + 1j * np.random.randn(len(symbols)))
-    rx_bits = qpsk_demod(symbols + noise)
-    errors = np.sum(rx_bits != bits)
-    ber.append(errors / num_bits)
-    print(f"Eb/N0 = {eb:2d} dB，误码率 = {errors / num_bits:.5f}")
+for eb in ebn0_db:
+    rx = qpsk_demod(awgn(symbols, eb, rng))
+    ber.append(np.mean(rx != bits))
+    print(f"Eb/N0 = {eb:2d} dB，误码率 = {ber[-1]:.5f}")
 
-plt.figure(figsize=(8, 5))
-plt.semilogy(EbN0_db, ber, 'o-', label="仿真 QPSK")
+fig = plt.figure(figsize=(8, 5))
+plt.semilogy(ebn0_db, ber, 'o-', label="仿真 QPSK")
+plt.semilogy(ebn0_db, qpsk_ber_theory(ebn0_db), 'k--', linewidth=1,
+             label="理论值 ½erfc(√(Eb/N0))")
 plt.xlabel("Eb/N0 (dB)")
 plt.ylabel("误码率 BER")
 plt.title("QPSK 误码率曲线")
 plt.grid(True, which='both')
 plt.legend()
-plt.show()
+finish(fig, args)
